@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billing-service
+  namespace: untitled
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: billing-service
+  template:
+    metadata:
+      labels:
+        app: billing-service
+    spec:
+      containers:
+        - name: billing-service
+          image: untitled-billing-service:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8083
+          env:
+            - name: EUREKA_CLIENT_SERVICEURL_DEFAULTZONE
+              value: "http://discovery-service:8761/eureka/"
+            - name: EUREKA_INSTANCE_PREFER_IP_ADDRESS
+              value: "true"
+            - name: SPRING_KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka:9093"
+

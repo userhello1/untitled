@@ -1,0 +1,311 @@
+# ========================================
+# DOCKER COMPOSE - MICROSERVICES ARCHITECTURE
+# ========================================
+# Cette architecture contient :
+# 1. INFRASTRUCTURE:
+#    - Zookeeper + Kafka : Messagerie asynchrone
+#    - Eureka : Service Discovery
+#    - Gateway : Point d'entrée unique (API Gateway)
+#
+# 2. MICROSERVICES:
+#    - customer-service : Gestion des clients
+#    - inventory-service : Gestion des produits
+#    - billing-service : Gestion des factures + Kafka Producer
+#
+# ORDRE DE DÉMARRAGE:
+# 1. Zookeeper → 2. Kafka → 3. Eureka → 4. Services métier → 5. Gateway
+
+services:
+  # ========================================
+  # ZOOKEEPER SERVICE
+  # ========================================
+  # Zookeeper gère la coordination du cluster Kafka:
+  # - Élit le broker leader
+  # - Stocke les métadonnées (topics, partitions, offsets)
+  # - Détecte les pannes des brokers
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    environment:
+      # Port d'écoute pour les clients Kafka
+      ZOOKEEPER_CLIENT_PORT: 2181
+      # Intervalle de tick en millisecondes (heartbeat)
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - microservices-network
+
+  # ========================================
+  # KAFKA BROKER SERVICE
+  # ========================================
+  # Le broker Kafka stocke et distribue les messages:
+  # - Reçoit les messages des producteurs (producers)
+  # - Stocke les messages dans des topics/partitions
+  # - Envoie les messages aux consommateurs (consumers)
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka-broker
+    depends_on:
+      - zookeeper
+    ports:
+      # Port externe pour les clients (nos microservices)
+      - "9092:9092"
+      # Port interne pour la communication inter-brokers
+      - "9093:9093"
+    environment:
+      # ID unique du broker dans le cluster (1, 2, 3, etc.)
+      KAFKA_BROKER_ID: 1
+
+      # Adresse de Zookeeper pour la coordination
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+
+      # LISTENERS: Ports d'écoute du broker
+      # - PLAINTEXT: Communication non sécurisée (développement)
+      # - PLAINTEXT_HOST: Pour les clients externes (localhost)
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:9092
+
+      # ADVERTISED_LISTENERS: Adresses que les clients utiliseront
+      # - localhost:9092 -> Pour nos microservices sur la machine hôte
+      # - kafka:9093 -> Pour la communication interne Docker
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9093,PLAINTEXT_HOST://localhost:9092
+
+      # Protocol utilisé pour la communication inter-brokers
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      # Facteur de réplication (1 = pas de réplication, OK pour dev)
+      # En production, utilisez 3 pour la haute disponibilité
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+
+      # Nombre de partitions par défaut pour les nouveaux topics
+      KAFKA_NUM_PARTITIONS: 3
+
+      # Temps de rétention des messages (7 jours par défaut)
+      # 604800000 ms = 7 jours
+      KAFKA_LOG_RETENTION_MS: 604800000
+
+    networks:
+      - microservices-network
+    volumes:
+      # Persistance des données Kafka (optionnel)
+      - kafka-data:/var/lib/kafka/data
+
+  # ========================================
+  # EUREKA SERVER (SERVICE DISCOVERY)
+  # ========================================
+  # Eureka est le registre de services qui permet :
+  # - L'enregistrement automatique des microservices au démarrage
+  # - La découverte de services (Service Discovery)
+  # - Le load balancing côté client
+  # - La surveillance de la santé des services (health checks)
+  discovery-service:
+    build:
+      context: ./discovery-service
+      dockerfile: Dockerfile
+    container_name: eureka-server
+    ports:
+      - "8761:8761"
+    environment:
+      # Configuration Spring pour Eureka en mode standalone
+      - SPRING_PROFILES_ACTIVE=default
+    networks:
+      - microservices-network
+    healthcheck:
+      # Vérifier que Eureka est prêt avant de démarrer les autres services
+      test: ["CMD", "curl", "-f", "http://localhost:8761/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ========================================
+  # CUSTOMER SERVICE
+  # ========================================
+  # Microservice de gestion des clients (CRUD)
+  # - S'enregistre automatiquement dans Eureka
+  # - Utilise H2 en mémoire comme base de données
+  # - Expose des endpoints REST pour les opérations sur les clients
+  customer-service:
+    build:
+      context: .
+      dockerfile: customer-service/Dockerfile
+    container_name: customer-service
+    ports:
+      - "8081:8081"
+    environment:
+      # URL d'Eureka pour l'enregistrement du service
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-service:8761/eureka/
+      # Préférer l'utilisation de l'adresse IP plutôt que le hostname
+      - EUREKA_INSTANCE_PREFER_IP_ADDRESS=true
+    networks:
+      - microservices-network
+    depends_on:
+      discovery-service:
+        # Attendre que Eureka soit en bonne santé
+        condition: service_healthy
+    restart: on-failure
+
+  # ========================================
+  # INVENTORY SERVICE
+  # ========================================
+  # Microservice de gestion des produits/inventaire (CRUD)
+  # - S'enregistre automatiquement dans Eureka
+  # - Utilise H2 en mémoire comme base de données
+  # - Expose des endpoints REST pour les opérations sur les produits
+  inventory-service:
+    build:
+      context: ./inventory-service
+      dockerfile: Dockerfile
+    container_name: inventory-service
+    ports:
+      - "8082:8082"
+    environment:
+      # URL d'Eureka pour l'enregistrement du service
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-service:8761/eureka/
+      # Préférer l'utilisation de l'adresse IP plutôt que le hostname
+      - EUREKA_INSTANCE_PREFER_IP_ADDRESS=true
+    networks:
+      - microservices-network
+    depends_on:
+      discovery-service:
+        condition: service_healthy
+    restart: on-failure
+
+  # ========================================
+  # BILLING SERVICE
+  # ========================================
+  # Microservice de gestion des factures
+  # COMMUNICATIONS:
+  # - SYNCHRONE (Feign): Récupère les données de customer-service et inventory-service
+  # - ASYNCHRONE (Kafka): Publie des événements "BillCreated" sur Kafka
+  #
+  # Ce service illustre la communication HYBRIDE:
+  # - REST/Feign pour obtenir les données immédiatement
+  # - Kafka pour notifier d'autres services sans les bloquer
+  billing-service:
+    build:
+      context: .
+      dockerfile: billing-service/Dockerfile
+    container_name: billing-service
+    ports:
+      - "8083:8083"
+    environment:
+      # Eureka configuration
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-service:8761/eureka/
+      - EUREKA_INSTANCE_PREFER_IP_ADDRESS=true
+
+      # Kafka configuration
+      # IMPORTANT: Utiliser 'kafka:9093' pour la communication interne Docker
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9093
+    networks:
+      - microservices-network
+    depends_on:
+      discovery-service:
+        condition: service_healthy
+      kafka:
+        # Attendre que Kafka soit démarré
+        condition: service_started
+      customer-service:
+        condition: service_started
+      inventory-service:
+        condition: service_started
+    restart: on-failure
+
+  # ========================================
+  # GATEWAY SERVICE (API GATEWAY)
+  # ========================================
+  # Spring Cloud Gateway - Point d'entrée unique de l'architecture
+  # RÔLES:
+  # - Routage des requêtes vers les microservices appropriés
+  # - Load balancing automatique via Eureka
+  # - Filtrage et transformation des requêtes/réponses
+  # - Sécurité centralisée (peut ajouter JWT, OAuth2)
+  #
+  # ROUTES CONFIGURÉES:
+  # - /customers/** → customer-service
+  # - /products/** → inventory-service
+  # - /bills/** → billing-service
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    container_name: api-gateway
+    ports:
+      # Port exposé pour accéder à l'API
+      - "8888:8888"
+    environment:
+      # Eureka configuration
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-service:8761/eureka/
+      - EUREKA_INSTANCE_PREFER_IP_ADDRESS=true
+    networks:
+      - microservices-network
+    depends_on:
+      discovery-service:
+        condition: service_healthy
+      customer-service:
+        condition: service_started
+      inventory-service:
+        condition: service_started
+      billing-service:
+        condition: service_started
+    restart: on-failure
+
+# ========================================
+# NETWORKS
+# ========================================
+# Réseau Docker partagé pour tous les conteneurs
+# Permet la communication inter-services via les noms de conteneurs
+networks:
+  microservices-network:
+    driver: bridge
+
+# ========================================
+# VOLUMES
+# ========================================
+# Volumes pour la persistance des données
+volumes:
+  kafka-data:
+    # Persiste les messages Kafka même après un redémarrage
+
+# ========================================
+# COMMANDES UTILES
+# ========================================
+#
+# DÉMARRER L'ARCHITECTURE:
+#   docker-compose up -d
+#   (Lance tous les services en arrière-plan)
+#
+# VOIR LES LOGS:
+#   docker-compose logs -f                    # Tous les services
+#   docker-compose logs -f billing-service    # Un service spécifique
+#   docker-compose logs -f kafka              # Logs Kafka
+#
+# VÉRIFIER L'ÉTAT:
+#   docker-compose ps                         # État des conteneurs
+#   docker-compose top                        # Processus en cours
+#
+# REDÉMARRER UN SERVICE:
+#   docker-compose restart billing-service
+#
+# RECONSTRUIRE ET REDÉMARRER:
+#   docker-compose up -d --build              # Rebuild tous les services
+#   docker-compose up -d --build gateway      # Rebuild un service spécifique
+#
+# ARRÊTER:
+#   docker-compose stop                       # Arrêter sans supprimer
+#   docker-compose down                       # Arrêter et supprimer les conteneurs
+#   docker-compose down -v                    # + Supprimer les volumes (données)
+#
+# ACCÈS AUX SERVICES:
+#   - Eureka Dashboard: http://localhost:8761
+#   - API Gateway: http://localhost:8888
+#   - Customers: http://localhost:8888/customers
+#   - Products: http://localhost:8888/products
+#   - Bills: http://localhost:8888/bills
+#
+# KAFKA CLI:
+#   docker exec -it kafka-broker bash
+#   kafka-topics --list --bootstrap-server localhost:9092
+#   kafka-console-consumer --bootstrap-server localhost:9092 --topic bill-events --from-beginning

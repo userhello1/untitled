@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventory-service
+  namespace: untitled
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: inventory-service
+  template:
+    metadata:
+      labels:
+        app: inventory-service
+    spec:
+      containers:
+        - name: inventory-service
+          image: untitled-inventory-service:latest
+          imagePullPolicy: Never    # <-- ici, au même niveau que "image"
+          ports:
+            - containerPort: 8082
+          env:
+            - name: EUREKA_CLIENT_SERVICEURL_DEFAULTZONE
+              value: "http://discovery-service:8761/eureka/"
+            - name: EUREKA_INSTANCE_PREFER_IP_ADDRESS
+              value: "true"

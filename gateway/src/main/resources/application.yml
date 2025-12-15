@@ -1,0 +1,62 @@
+# ========================================
+# GATEWAY APPLICATION
+# ========================================
+
+server:
+  port: 8888
+
+spring:
+  application:
+    name: gateway
+  cloud:
+    gateway:
+      routes:
+        - id: customers-route
+          uri: lb://customer-service
+          predicates:
+            - Path=/customers/**
+
+        - id: products-route
+          uri: lb://inventory-service
+          predicates:
+            - Path=/products/**
+
+        - id: billing-route
+          uri: lb://billing-service
+          predicates:
+            - Path=/bills/**
+
+    discovery:
+      locator:
+        enabled: true
+        lower-case-service-id: true
+
+logging:
+  level:
+    org.springframework.cloud.gateway: DEBUG
+    reactor.netty: DEBUG
+
+# ========================================
+# EUREKA CLIENT
+# ========================================
+eureka:
+  client:
+    # Utiliser le nom du service Docker pour communiquer avec Eureka
+    service-url:
+      defaultZone: http://discovery-service:8761/eureka
+    register-with-eureka: true
+    fetch-registry: true
+  instance:
+    prefer-ip-address: true
+
+# ========================================
+# ACTUATOR
+# ========================================
+management:
+  endpoints:
+    web:
+      exposure:
+        include: gateway, routes, health, info
+  endpoint:
+    gateway:
+      enabled: true
