@@ -19,6 +19,7 @@ spec:
           imagePullPolicy: Never
           ports:
             - containerPort: 8083
+
           env:
             - name: EUREKA_CLIENT_SERVICEURL_DEFAULTZONE
               value: "http://discovery-service:8761/eureka/"

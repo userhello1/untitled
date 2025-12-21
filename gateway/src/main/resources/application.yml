@@ -56,7 +56,11 @@ management:
   endpoints:
     web:
       exposure:
-        include: gateway, routes, health, info
+        include: gateway, routes, health, info, prometheus
   endpoint:
     gateway:
+      enabled: true
+metrics:
+  export:
+    prometheus:
       enabled: true

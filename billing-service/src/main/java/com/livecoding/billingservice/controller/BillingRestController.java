@@ -1,6 +1,7 @@
 package com.livecoding.billingservice.controller;
 
 import com.livecoding.billingservice.dto.ProductSelection;
+import com.livecoding.billingservice.service.BillingService;
 import com.livecoding.events.BillCreatedEvent;
 import com.livecoding.billingservice.dto.Customer;
 import com.livecoding.billingservice.dto.Product;
@@ -12,6 +13,7 @@ import com.livecoding.billingservice.kafka.BillEventProducer;
 import com.livecoding.billingservice.repository.BillRepository;
 import com.livecoding.billingservice.repository.ProductItemRepository;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Date;
@@ -22,137 +24,52 @@ import java.util.List;
 @RequestMapping("/bills")
 public class BillingRestController {
 
+    private final BillingService billingService;
+
     @Autowired
-    private BillRepository billRepository;
-    
-    @Autowired
-    private ProductItemRepository productItemRepository;
-    
-    @Autowired
-    private CustomerRestClient customerRestClient;
-    
-    @Autowired
-    private ProductRestClient productRestClient;
-    
-    /**
-     * ========================================
-     * KAFKA PRODUCER
-     * ========================================
-     */
-    @Autowired
-    private BillEventProducer billEventProducer;
-    
-    // Récupérer toutes les factures
+    public BillingRestController(BillingService billingService) {
+        this.billingService = billingService;
+    }
+
     @GetMapping
-    public List<Bill> getAllBills() {
-        return billRepository.findAll();
+    public ResponseEntity<List<Bill>> getAllBills() {
+        return ResponseEntity.ok(billingService.getAllBills());
     }
-    
-    // Récupérer une facture par ID
+
     @GetMapping("/{id}")
-    public Bill getBillById(@PathVariable Long id) {
-        Bill bill = billRepository.findById(id).orElse(null);
-        if (bill != null) {
-            // Récupérer les informations du customer
-            bill.setCustomer(customerRestClient.findCustomerById(bill.getCustomerId()));
+    public ResponseEntity<Bill> getBillById(@PathVariable Long id) {
+        Bill bill = billingService.getBillById(id);
+        if (bill == null) {
+            return ResponseEntity.notFound().build();
         }
-        return bill;
+        return ResponseEntity.ok(bill);
     }
-    
-    // Récupérer les items d'une facture
+
     @GetMapping("/{id}/items")
-    public List<ProductItem> getBillItems(@PathVariable Long id) {
-        Bill bill = billRepository.findById(id).orElse(null);
-        if (bill != null) {
-            List<ProductItem> items = productItemRepository.findByBill(bill);
-            // Enrichir chaque item avec les infos du produit
-            items.forEach(item -> {
-                item.setProduct(productRestClient.findProductById(item.getProductId()));
-            });
-            return items;
-        }
-        return null;
+    public ResponseEntity<List<ProductItem>> getBillItems(@PathVariable Long id) {
+        List<ProductItem> items = billingService.getBillItems(id);
+        return ResponseEntity.ok(items);
     }
-    
+
     @PostMapping("/generate-all")
-    public String generateAllBills() {
-        List<Customer> customers = customerRestClient.getAllCustomers();
-        List<Product> products = productRestClient.getAllProducts();
-        
-        customers.forEach(customer -> {
-            Bill bill = Bill.builder()
-                    .billingDate(new Date())
-                    .customerId(customer.getId())
-                    .build();
-            billRepository.save(bill);
-            
-            products.forEach(product -> {
-                ProductItem productItem = ProductItem.builder()
-                        .bill(bill)
-                        .productId(product.getId())
-                        .quantity(1 + (int)(Math.random() * 10))
-                        .unitPrice(product.getPrice())
-                        .build();
-                productItemRepository.save(productItem);
-            });
-        });
-        
-        return "✅ " + billRepository.count() + " factures générées avec succès!";
+    public ResponseEntity<String> generateAllBills() {
+        String result = billingService.generateAllBills();
+        return ResponseEntity.ok(result);
     }
 
     @PostMapping("/customer/{customerId}")
-    public Bill createBillForCustomer(
+    public ResponseEntity<Bill> createBillForCustomer(
             @PathVariable Long customerId,
-            @RequestBody List<ProductSelection> selections // Produits + quantités choisis
+            @RequestBody List<ProductSelection> selections
     ) {
-        Customer customer = customerRestClient.findCustomerById(customerId);
-        if (customer == null) {
-            return null;
+        try {
+            Bill bill = billingService.createBillForCustomer(customerId, selections);
+            return ResponseEntity.ok(bill);
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(null);
         }
-
-        Bill bill = Bill.builder()
-                .billingDate(new Date())
-                .customerId(customerId)
-                .build();
-        billRepository.save(bill);
-
-        int totalItems = 0;
-        double totalAmount = 0.0;
-
-        // Pour chaque produit choisi
-        for (ProductSelection selection : selections) {
-            Product product = productRestClient.findProductById(selection.getProductId());
-            if (product != null) {
-                int quantity = selection.getQuantity();
-                double itemTotal = quantity * product.getPrice();
-
-                ProductItem productItem = ProductItem.builder()
-                        .bill(bill)
-                        .productId(product.getId())
-                        .quantity(quantity)
-                        .unitPrice(product.getPrice())
-                        .build();
-                productItemRepository.save(productItem);
-
-                totalItems += quantity;
-                totalAmount += itemTotal;
-            }
-        }
-
-        BillCreatedEvent event = BillCreatedEvent.builder()
-                .billId(bill.getId())
-                .customerId(customer.getId())
-                .customerName(customer.getName())
-                .customerEmail(customer.getEmail())
-                .billingDate(bill.getBillingDate())
-                .totalItems(totalItems)
-                .totalAmount(totalAmount)
-                .build();
-        billEventProducer.sendBillCreatedEvent(event);
-
-        bill.setCustomer(customer);
-        return bill;
     }
+
 
     /* ========================================
      * ANCIEN CODE (AVANT KAFKA) - COMMENTÉ
